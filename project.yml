@@ -1,0 +1,67 @@
+# XcodeGen spec. Requires full Xcode (not just Command Line Tools):
+#   brew install xcodegen && xcodegen generate && xcodebuild -scheme Karaoke build
+#
+# Every setting below is load-bearing — see CLAUDE.md "Build configuration".
+name: Karaoke
+
+options:
+  bundleIdPrefix: com.logan
+  deploymentTarget:
+    macOS: "14.0"
+  createIntermediateGroups: true
+
+targets:
+  Karaoke:
+    type: application
+    platform: macOS
+
+    sources:
+      - path: .
+        includes:
+          - "*.swift"
+
+    entitlements:
+      path: Karaoke.entitlements
+      properties:
+        # App Sandbox deliberately absent: a sandboxed app cannot send Apple Events
+        # to Spotify without a temporary-exception entitlement that leads nowhere.
+        com.apple.security.automation.apple-events: true
+
+    info:
+      path: Info.plist
+      properties:
+        CFBundleName: Karaoke
+        CFBundleDisplayName: Karaoke
+        LSMinimumSystemVersion: "14.0"
+        LSApplicationCategoryType: public.app-category.music
+        NSHighResolutionCapable: true
+        # Without this the app crashes on first Spotify contact.
+        NSAppleEventsUsageDescription: >-
+          Karaoke reads the current track and playback position from Spotify
+          to keep the lyrics in sync.
+
+    settings:
+      base:
+        PRODUCT_NAME: Karaoke
+        PRODUCT_BUNDLE_IDENTIFIER: com.logan.SpotifyKaraoke
+        MARKETING_VERSION: "1.0"
+        CURRENT_PROJECT_VERSION: "1"
+        MACOSX_DEPLOYMENT_TARGET: "14.0"
+
+        # Swift 5, not 6: strict concurrency flags actor-boundary crossings.
+        SWIFT_VERSION: "5.0"
+        SWIFT_STRICT_CONCURRENCY: minimal
+
+        # Hardened Runtime on, with the Apple Events exception ticked.
+        ENABLE_HARDENED_RUNTIME: YES
+        ENABLE_APP_SANDBOX: NO
+
+        # Ad-hoc signing keeps a personal build running without a paid team.
+        # TCC caches automation consent against the signature, so if you switch
+        # to a real identity you will be re-prompted once.
+        CODE_SIGN_STYLE: Manual
+        CODE_SIGN_IDENTITY: "-"
+        DEVELOPMENT_TEAM: ""
+
+        GENERATE_INFOPLIST_FILE: NO
+        COMBINE_HIDPI_IMAGES: YES
