@@ -62,8 +62,14 @@ actor AnalysisProvider {
 
         // `search` is an array of hits, or an object carrying an error when
         // nothing matched. Tolerate both rather than failing the decode.
-        guard let hits = object["search"] as? [[String: Any]], let first = hits.first else { return nil }
-        return (first["id"] as? String, Self.analysis(from: first))
+        guard let hits = object["search"] as? [[String: Any]] else { return nil }
+
+        // GetSongBPM matches loosely on title: asking for "Hello" by Adele will
+        // happily return "Hello Babe" by Madeleine Peyroux. Take the first hit
+        // whose artist actually corresponds, and show nothing rather than
+        // someone else's key and tempo.
+        guard let hit = hits.first(where: { Self.artist($0, matches: artist) }) else { return nil }
+        return (hit["id"] as? String, Self.analysis(from: hit))
     }
 
     private func song(id: String, apiKey: String) async -> TrackAnalysis? {
@@ -94,6 +100,28 @@ actor AnalysisProvider {
 
     private static func analysis(from record: [String: Any]) -> TrackAnalysis {
         TrackAnalysis(key: prettyKey(record["key_of"]), tempo: number(record["tempo"]))
+    }
+
+    /// Whole-word comparison, deliberately not substring: "Madeleine" contains
+    /// the letters of "Adele", which is exactly how a search for Adele ends up
+    /// returning Madeleine Peyroux's key and tempo.
+    private static func artist(_ record: [String: Any], matches wanted: String) -> Bool {
+        guard let name = (record["artist"] as? [String: Any])?["name"] as? String else { return false }
+        let found = words(in: name)
+        let target = words(in: wanted)
+        guard !found.isEmpty, !target.isEmpty else { return false }
+        if found == target { return true }
+        // Allows "Simon & Garfunkel" to match "Simon and Garfunkel" without
+        // letting unrelated names through.
+        let (fewer, more) = found.count <= target.count ? (found, target) : (target, found)
+        return fewer.isSubset(of: more)
+    }
+
+    private static func words(in raw: String) -> Set<String> {
+        let expanded = raw.lowercased().replacingOccurrences(of: "&", with: " and ")
+        return Set(expanded.split { !$0.isLetter && !$0.isNumber }
+                           .map(String.init)
+                           .filter { $0.count > 1 })
     }
 
     private static func number(_ value: Any?) -> Double? {

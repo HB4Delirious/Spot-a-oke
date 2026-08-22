@@ -3,6 +3,9 @@ import Foundation
 struct LyricWord: Hashable {
     let time: Double
     let text: String
+    /// Words that sat inside parentheses — backing vocals and ad-libs rather
+    /// than the lead line.
+    var isAside: Bool = false
 }
 
 struct LyricLine: Identifiable, Hashable {
@@ -13,6 +16,9 @@ struct LyricLine: Identifiable, Hashable {
     let words: [LyricWord]
     /// Start of the next line — used to pace the sweep on plain LRC.
     var end: Double
+    /// When the singing actually stops. For estimated words this lands earlier
+    /// than `end`, which runs to the next line and so includes trailing silence.
+    var voicedEnd: Double
 
     var duration: Double { max(0.2, end - time) }
     var isBlank: Bool { text.trimmingCharacters(in: .whitespaces).isEmpty }
@@ -21,11 +27,18 @@ struct LyricLine: Identifiable, Hashable {
     /// nil before the line starts, or when the line carries no word breakdown.
     func wordState(at position: Double) -> (index: Int, fraction: Double)? {
         guard !words.isEmpty, position >= time else { return nil }
-        guard position < end else { return (words.count - 1, 1) }
+        guard position < voicedEnd else { return (words.count - 1, 1) }
 
         for index in words.indices.reversed() where position >= words[index].time {
-            let wordEnd = index + 1 < words.count ? words[index + 1].time : end
-            let fraction = (position - words[index].time) / max(0.05, wordEnd - words[index].time)
+            let wordEnd = index + 1 < words.count ? words[index + 1].time : voicedEnd
+            let span = max(0.05, wordEnd - words[index].time)
+
+            // Finish the sweep slightly before the next word starts. Sampling at
+            // frame rate means the last frame of a short word lands around 0.95,
+            // so the final sliver would otherwise snap to full in one frame
+            // rather than sweeping — visible as a pop at the end of every word.
+            let lead = min(0.04, span * 0.08)
+            let fraction = (position - words[index].time) / max(0.05, span - lead)
             return (index, min(1, max(0, fraction)))
         }
         return (0, 0)
@@ -117,16 +130,18 @@ enum LRCParser {
             let tagged = item.words.map {
                 LyricWord(time: max(0, $0.time - offsetSeconds), text: $0.text)
             }
+            // Enhanced LRC gives us real word onsets. Everything else gets
+            // estimated ones, so the highlight still advances word by word.
+            let breakdown = tagged.isEmpty
+                ? estimateWords(text: item.text, from: start, to: lineEnd)
+                : (words: tagged, voicedEnd: lineEnd)
             lines.append(LyricLine(
                 id: index,
                 time: start,
                 text: item.text,
-                // Enhanced LRC gives us real word onsets. Everything else gets
-                // estimated ones, so the highlight still advances word by word.
-                words: tagged.isEmpty
-                    ? estimateWords(text: item.text, from: start, to: lineEnd)
-                    : tagged,
-                end: lineEnd))
+                words: markAsides(breakdown.words),
+                end: lineEnd,
+                voicedEnd: min(lineEnd, max(start + 0.2, breakdown.voicedEnd))))
         }
         return lines
     }
@@ -165,17 +180,26 @@ enum LRCParser {
     ///
     /// It is an estimate. Held notes and rests still drift, and the sync trim
     /// remains the fix for a line that runs consistently early or late.
-    static func estimateWords(text: String, from start: Double, to end: Double) -> [LyricWord] {
+    static func estimateWords(text: String, from start: Double,
+                              to end: Double) -> (words: [LyricWord], voicedEnd: Double) {
         let tokens = text.split(whereSeparator: { $0.isWhitespace }).map(String.init)
+        let available = max(0.2, end - start)
+
         guard tokens.count > 1 else {
-            return tokens.isEmpty ? [] : [LyricWord(time: start, text: tokens[0])]
+            guard let only = tokens.first else { return ([], start) }
+            let span = min(available, Double(syllables(in: only)) * secondsPerSyllable)
+            return ([LyricWord(time: start, text: only)], start + span)
         }
 
         let weights = tokens.map { Double(syllables(in: $0)) }
         let total = weights.reduce(0, +)
-        guard total > 0 else { return [] }
+        guard total > 0 else { return ([], start) }
 
-        let span = max(0.2, end - start)
+        // `end` is the *next* line's start, so it includes whatever silence
+        // follows this line. Spreading the words over all of it makes the
+        // highlight crawl behind the singer through every gap. Cap the span at a
+        // plausible sung pace and let the line finish early instead of lagging.
+        let span = min(available, total * secondsPerSyllable)
         var words: [LyricWord] = []
         words.reserveCapacity(tokens.count)
         var consumed = 0.0
@@ -183,7 +207,29 @@ enum LRCParser {
             words.append(LyricWord(time: start + span * (consumed / total), text: token))
             consumed += weights[index]
         }
-        return words
+        return (words, start + span)
+    }
+
+    /// Roughly three syllables a second, a typical sung pace. Only used to keep a
+    /// line's words off the silence that follows it — raise it if the highlight
+    /// consistently finishes lines early, lower it if it still lags.
+    private static let secondsPerSyllable = 0.33
+
+    /// Flags words inside parentheses and removes the brackets themselves.
+    /// Depth-tracked, so "(ooh (yeah) ooh)" stays marked throughout.
+    private static func markAsides(_ words: [LyricWord]) -> [LyricWord] {
+        var depth = 0
+        return words.map { word in
+            let opens = word.text.filter { $0 == "(" }.count
+            let closes = word.text.filter { $0 == ")" }.count
+            let inside = depth > 0 || opens > 0
+            depth = max(0, depth + opens - closes)
+
+            let bare = word.text
+                .replacingOccurrences(of: "(", with: "")
+                .replacingOccurrences(of: ")", with: "")
+            return LyricWord(time: word.time, text: bare, isAside: inside)
+        }
     }
 
     /// Vowel-group count, which is a decent proxy for how long a word is held.

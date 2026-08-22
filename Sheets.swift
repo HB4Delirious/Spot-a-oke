@@ -96,11 +96,15 @@ struct SearchSheet: View {
 // MARK: - Settings
 
 struct SettingsSheet: View {
+    @EnvironmentObject private var model: KaraokeModel
     @Environment(\.dismiss) private var dismiss
     @State private var clientID = ""
     @State private var clientSecret = ""
     @State private var songBPMKey = ""
     @State private var saved = false
+    @AppStorage(FrameRate.defaultsKey) private var targetFPS: Double = FrameRate.minimum
+    @AppStorage(MIDIBridge.enabledKey) private var midiEnabled = false
+    @AppStorage(MIDIBridge.clockKey) private var midiClock = false
 
     var body: some View {
         VStack(alignment: .leading, spacing: 18) {
@@ -142,6 +146,76 @@ struct SettingsSheet: View {
 
             labelled("GetSongBPM API key") {
                 TextField("", text: $songBPMKey)
+            }
+
+            Divider().overlay(Theme.hairline)
+
+            Text("Send to Logic")
+                .font(.system(size: 16, weight: .semibold, design: .rounded))
+
+            VStack(alignment: .leading, spacing: 8) {
+                Toggle("Send key and tempo as MIDI", isOn: $midiEnabled)
+                    .font(.system(size: 12, design: .rounded))
+
+                Text("Publishes a MIDI source named “Spot-a-oke”. In Logic, open Controller Assignments (⌘L), touch a plug-in parameter, then change track — CC 20 carries the key, 21 major/minor, 22 the tempo.")
+                    .font(.system(size: 11, design: .rounded))
+                    .foregroundStyle(Theme.upcoming)
+                    .fixedSize(horizontal: false, vertical: true)
+
+                // Learn Mode has to receive a message while it's listening, and
+                // track changes are awkward to time. These send on demand.
+                HStack(spacing: 8) {
+                    Text("Send for Learn:")
+                        .font(Theme.label)
+                        .foregroundStyle(Theme.upcoming)
+                    Button("Key") { MIDIBridge.shared.sendForLearn(model.analysis, control: .key) }
+                    Button("Major/minor") { MIDIBridge.shared.sendForLearn(model.analysis, control: .mode) }
+                    Button("Tempo") { MIDIBridge.shared.sendForLearn(model.analysis, control: .tempo) }
+                }
+                .controlSize(.small)
+                .disabled(!midiEnabled)
+
+                Toggle("Also send MIDI beat clock", isOn: $midiClock)
+                    .font(.system(size: 12, design: .rounded))
+                    .disabled(!midiEnabled)
+
+                Text("Only followed when Logic is set to external sync — which slaves its transport as well as its tempo. Leave off if you're tracking into an arranged session.")
+                    .font(.system(size: 11, design: .rounded))
+                    .foregroundStyle(Theme.upcoming)
+                    .fixedSize(horizontal: false, vertical: true)
+            }
+
+            Divider().overlay(Theme.hairline)
+
+            Text("Display")
+                .font(.system(size: 16, weight: .semibold, design: .rounded))
+
+            VStack(alignment: .leading, spacing: 6) {
+                HStack {
+                    Text("Frame rate")
+                        .font(Theme.label)
+                        .foregroundStyle(Theme.upcoming)
+                    Spacer()
+                    Text("\(Int(targetFPS)) fps")
+                        .font(.system(size: 12, weight: .semibold, design: .rounded))
+                        .foregroundStyle(.white)
+                }
+
+                if FrameRate.isAdjustable {
+                    Slider(value: $targetFPS,
+                           in: FrameRate.minimum...FrameRate.displayMaximum,
+                           step: 10)
+                    Text("This display supports up to \(Int(FrameRate.displayMaximum)) fps. Higher rates are smoother but cost more GPU.")
+                        .font(.system(size: 11, design: .rounded))
+                        .foregroundStyle(Theme.upcoming)
+                        .fixedSize(horizontal: false, vertical: true)
+                } else {
+                    // A 60 Hz panel has nothing to choose between.
+                    Text("This display runs at \(Int(FrameRate.displayMaximum)) fps, so there's nothing above 60 to unlock.")
+                        .font(.system(size: 11, design: .rounded))
+                        .foregroundStyle(Theme.upcoming)
+                        .fixedSize(horizontal: false, vertical: true)
+                }
             }
 
             HStack {
